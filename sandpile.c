@@ -74,7 +74,59 @@ static void render(char *restrict filename, int *restrict grid, size_t N) {
   free(pixels);
 }
 
-static void stabilize(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q) {
+static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *restrict col_end, const double *restrict b, double *restrict x, double tol, double *restrict r, double *restrict p, double *restrict Ap) {
+  double rr = 0.0;
+
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+      size_t index = grid_index(i, j, N);
+
+      r[index] = b[index];
+      p[index] = b[index];
+      x[index] = 0.0;
+      rr += b[index] * b[index];
+    }
+  }
+
+  double stop = tol * tol * rr;
+
+  while (rr > stop) {
+    double pAp = 0.0;
+    for (size_t i = 0; i < N; ++i) {
+      for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+        size_t index = grid_index(i, j, N);
+
+        Ap[index] = 4 * p[index] - p[grid_index(i - 1, j, N)] - p[grid_index(i, j - 1, N)] - p[grid_index(i + 1, j, N)] - p[grid_index(i, j + 1, N)];
+        pAp += p[index] * Ap[index];
+      }
+    }
+
+    double alpha = rr / pAp;
+    double rr_new = 0.0;
+    for (size_t i = 0; i < N; ++i) {
+      for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+        size_t index = grid_index(i, j, N);
+
+        x[index] += alpha * p[index];
+        r[index] -= alpha * Ap[index];
+        rr_new += r[index] * r[index];
+      }
+    }
+
+    double beta = rr_new / rr;
+    rr = rr_new;
+
+    for (size_t i = 0; i < N; ++i) {
+      for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+        size_t index = grid_index(i, j, N);
+
+        p[index] = r[index] + beta * p[index];
+      }
+    }
+  }
+}
+
+static void stabilize_by_toppling(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q) {
   int changed = 0;
   do {
     changed = 0;
@@ -94,19 +146,48 @@ static void stabilize(int *restrict grid, size_t N, const size_t *restrict col_s
   } while (changed);
 }
 
-void find_identity(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q) {
+static void stabilize(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+      size_t index = grid_index(i, j, N);
+
+      b[index] = (double)grid[index] - 3.0;
+    }
+  }
+
+  cg_solve(N, col_start, col_end, b, x, 1e-6, r, p, Ap);
+
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+      size_t index = grid_index(i, j, N);
+
+      t[index] = MAX(0, (int)floor(x[index]));
+    }
+  }
+
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+      int new = grid[grid_index(i, j, N)] - 4 * t[grid_index(i, j, N)] + t[grid_index(i - 1, j, N)] + t[grid_index(i, j - 1, N)] + t[grid_index(i + 1, j, N)] + t[grid_index(i, j + 1, N)];
+      grid[grid_index(i, j, N)] = new;
+    }
+  }
+
+  stabilize_by_toppling(grid, N, col_start, col_end, q);
+}
+
+void find_identity(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6;
     }
   }
-  stabilize(grid, N, col_start, col_end, q);
+  stabilize(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6 - grid[grid_index(i, j, N)];
     }
   }
-  stabilize(grid, N, col_start, col_end, q);
+  stabilize(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
 }
 
 static void cond_fix_sink(size_t i, size_t j, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict grid) {
@@ -129,17 +210,14 @@ int main(int argc, char **argv) {
     die("grid size must be a positive int");
   size_t N = (size_t)parsed;
 
-  int *grid = (int *)calloc((N + 2) * (N + 2), sizeof(int));
-  int *q = (int *)calloc((N + 2) * (N + 2), sizeof(int));
-
   ptrdiff_t n = (ptrdiff_t)N;
-  ptrdiff_t r = n / 2;
+  ptrdiff_t rad = n / 2;
 
   size_t *col_start = (size_t *)malloc(N * sizeof(size_t));
   size_t *col_end = (size_t *)malloc(N * sizeof(size_t));
 
   for (ptrdiff_t i = 0; i < n; ++i) {
-    ptrdiff_t width_2 = r * r - (i - r) * (i - r);
+    ptrdiff_t width_2 = rad * rad - (i - rad) * (i - rad);
     if (width_2 < 0) {
       col_start[i] = 1;
       col_end[i] = 0;
@@ -148,11 +226,20 @@ int main(int argc, char **argv) {
 
     ptrdiff_t width = (ptrdiff_t)sqrt((double)width_2);
 
-    col_start[i] = (size_t)MAX(0, r - width);
-    col_end[i] = (size_t)MIN(n - 1, MIN(r + width, MAX(i, n - 1 - i)));
+    col_start[i] = (size_t)MAX(0, rad - width);
+    col_end[i] = (size_t)MIN(n - 1, MIN(rad + width, MAX(i, n - 1 - i)));
   }
 
-  find_identity(grid, N, col_start, col_end, q);
+  int *grid = (int *)calloc((N + 2) * (N + 2), sizeof(int));
+  int *q = (int *)calloc((N + 2) * (N + 2), sizeof(int));
+  int *t = (int *)calloc((N + 2) * (N + 2), sizeof(int));
+  double *b = (double *)calloc((N + 2) * (N + 2), sizeof(double));
+  double *x = (double *)calloc((N + 2) * (N + 2), sizeof(double));
+  double *r = (double *)calloc((N + 2) * (N + 2), sizeof(double));
+  double *p = (double *)calloc((N + 2) * (N + 2), sizeof(double));
+  double *Ap = (double *)calloc((N + 2) * (N + 2), sizeof(double));
+
+  find_identity(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
 
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
@@ -163,13 +250,20 @@ int main(int argc, char **argv) {
     }
   }
 
+  free(col_start);
+  free(col_end);
+
+  free(q);
+  free(t);
+  free(b);
+  free(x);
+  free(r);
+  free(p);
+  free(Ap);
+
   render("identity.png", grid, N);
 
   free(grid);
-  free(q);
-
-  free(col_start);
-  free(col_end);
 
   return EXIT_SUCCESS;
 }
