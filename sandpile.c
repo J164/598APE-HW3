@@ -20,6 +20,7 @@ static void die(const char *s) {
 
 int N = 801;
 int **grid;
+int *col_start, *col_end;
 
 // you can also use this function to debug print your sandpile
 static void render(char *filename) {
@@ -77,22 +78,19 @@ static void stabilize() {
   do {
     changed = 0;
     for (int i = 0; i < N; ++i) {
-      for (int j = 0; j <= MAX(i, N - 1 - i); ++j) {
-        if ((i - N / 2) * (i - N / 2) + (j - N / 2) * (j - N / 2) <=
-            (N / 2) * (N / 2)) {
-          if (grid[i][j] < 4)
-            continue;
-          changed = 1; // topple it
-          grid[i][j] -= 4;
-          if (i > 0)
-            grid[i - 1][j]++;
-          if (j > 0)
-            grid[i][j - 1]++;
-          if (i < N - 1)
-            grid[i + 1][j]++;
-          if (j < N - 1)
-            grid[i][j + 1]++;
-        }
+      for (int j = col_start[i]; j <= col_end[i]; ++j) {
+        if (grid[i][j] < 4)
+          continue;
+        changed = 1; // topple it
+        grid[i][j] -= 4;
+        if (i > 0)
+          grid[i - 1][j]++;
+        if (j > 0)
+          grid[i][j - 1]++;
+        if (i < N - 1)
+          grid[i + 1][j]++;
+        if (j < N - 1)
+          grid[i][j + 1]++;
       }
     }
   } while (changed);
@@ -130,6 +128,24 @@ int main(int argc, char **argv) {
     grid[i] = (int *)malloc(N * sizeof(int));
   }
 
+  col_start = (int *)malloc(N * sizeof(int));
+  col_end = (int *)malloc(N * sizeof(int));
+
+  int r = N / 2;
+  for (int i = 0; i < N; ++i) {
+    int width_2 = r * r - (i - r) * (i - r);
+    if (width_2 < 0) {
+      col_start[i] = 1;
+      col_end[i] = 0;
+      continue;
+    }
+
+    int width = (int)sqrt((double)width_2);
+
+    col_start[i] = MAX(0, r - width);
+    col_end[i] = MIN(N - 1, MIN(r + width, MAX(i, N - 1 - i)));
+  }
+
   find_identity();
 
   render("identity.png");
@@ -137,5 +153,8 @@ int main(int argc, char **argv) {
     free(grid[i]);
   }
   free(grid);
+
+  free(col_start);
+  free(col_end);
   return EXIT_SUCCESS;
 }
