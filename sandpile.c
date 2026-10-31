@@ -24,7 +24,7 @@ static size_t grid_index(size_t i, size_t j, size_t N) {
 }
 
 // you can also use this function to debug print your sandpile
-static void render(char *restrict filename, int *restrict grid, size_t N) {
+static void render(char *restrict filename, int8_t *restrict grid, size_t N) {
   size_t chan = 3;
   unsigned char *pixels = (unsigned char *)malloc(N * N * chan * sizeof(char));
   size_t stride = N * chan;
@@ -126,7 +126,7 @@ static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *r
   }
 }
 
-static void stabilize_by_toppling(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q) {
+static void stabilize_by_toppling(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict q) {
   int changed = 0;
   do {
     changed = 0;
@@ -146,7 +146,7 @@ static void stabilize_by_toppling(int *restrict grid, size_t N, const size_t *re
   } while (changed);
 }
 
-static void stabilize(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
       size_t index = grid_index(i, j, N);
@@ -168,14 +168,14 @@ static void stabilize(int *restrict grid, size_t N, const size_t *restrict col_s
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
       int new = grid[grid_index(i, j, N)] - 4 * t[grid_index(i, j, N)] + t[grid_index(i - 1, j, N)] + t[grid_index(i, j - 1, N)] + t[grid_index(i + 1, j, N)] + t[grid_index(i, j + 1, N)];
-      grid[grid_index(i, j, N)] = new;
+      grid[grid_index(i, j, N)] = (int8_t)new;
     }
   }
 
   stabilize_by_toppling(grid, N, col_start, col_end, q);
 }
 
-void find_identity(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+void find_identity(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6;
@@ -190,7 +190,7 @@ void find_identity(int *restrict grid, size_t N, const size_t *restrict col_star
   stabilize(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
 }
 
-static void cond_fix_sink(size_t i, size_t j, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int *restrict grid) {
+static void cond_fix_sink(size_t i, size_t j, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict grid) {
   size_t index = grid_index(i, j, N);
 
   if (i < N && j < N && (j < col_start[i] || j > col_end[i])) { 
@@ -230,8 +230,8 @@ int main(int argc, char **argv) {
     col_end[i] = (size_t)MIN(n - 1, MIN(rad + width, MAX(i, n - 1 - i)));
   }
 
-  int *grid = (int *)calloc((N + 2) * (N + 2), sizeof(int));
-  int *q = (int *)calloc((N + 2) * (N + 2), sizeof(int));
+  int8_t *grid = (int8_t *)calloc((N + 2) * (N + 2), sizeof(int8_t));
+  int8_t *q = (int8_t *)calloc((N + 2) * (N + 2), sizeof(int8_t));
   int *t = (int *)calloc((N + 2) * (N + 2), sizeof(int));
   double *b = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *x = (double *)calloc((N + 2) * (N + 2), sizeof(double));
