@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,21 +19,21 @@ static void die(const char *s) {
   exit(1);
 }
 
-int N = 801;
-int **grid;
-int *col_start, *col_end;
+static size_t grid_index(size_t i, size_t j, size_t N) {
+  return (i + 1) * (N + 2) + (j + 1);
+}
 
 // you can also use this function to debug print your sandpile
-static void render(char *filename) {
-  int chan = 3;
+static void render(char *restrict filename, int *restrict grid, size_t N) {
+  size_t chan = 3;
   unsigned char *pixels = (unsigned char *)malloc(N * N * chan * sizeof(char));
-  int stride = N * chan;
+  size_t stride = N * chan;
   if (!pixels)
     die("malloc failed for PNG pixel buffer");
-  for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < N; ++j) {
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = 0; j < N; ++j) {
       unsigned char r = 0, g = 0, b = 0;
-      switch (grid[i][j]) {
+      switch (grid[grid_index(i, j, N)]) {
       case 0: // obsidian
         r = 15;
         g = 15;
@@ -59,13 +60,13 @@ static void render(char *filename) {
         b = 0;
       }
 
-      int pid = (i * N + j) * chan;
+      size_t pid = (i * N + j) * chan;
       pixels[pid] = r;
       pixels[pid + 1] = g;
       pixels[pid + 2] = b;
     }
   }
-  if (stbi_write_png(filename, N, N, chan, pixels, stride)) {
+  if (stbi_write_png(filename, (int)N, (int)N, (int)chan, pixels, (int)stride)) {
     printf("Successfully saved sandpile identity to: %s\n", filename);
   } else {
     die("Error: stb_image_write failed to save png file\n");
@@ -73,43 +74,40 @@ static void render(char *filename) {
   free(pixels);
 }
 
-static void stabilize() {
+static void stabilize(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end) {
   int changed = 0;
   do {
     changed = 0;
-    for (int i = 0; i < N; ++i) {
-      for (int j = col_start[i]; j <= col_end[i]; ++j) {
-        if (grid[i][j] < 4)
+    for (size_t i = 0; i < N; ++i) {
+      for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+        if (grid[grid_index(i, j, N)] < 4)
           continue;
         changed = 1; // topple it
-        int q = grid[i][j] / 4;
-        grid[i][j] %= 4;
-        if (i > 0)
-          grid[i - 1][j] += q;
-        if (j > 0)
-          grid[i][j - 1] += q;
-        if (i < N - 1)
-          grid[i + 1][j] += q;
-        if (j < N - 1)
-          grid[i][j + 1] += q;
+        int q = grid[grid_index(i, j, N)] / 4;
+        grid[grid_index(i, j, N)] %= 4;
+
+        grid[grid_index(i - 1, j, N)] += q;
+        grid[grid_index(i, j - 1, N)] += q;
+        grid[grid_index(i + 1, j, N)] += q;
+        grid[grid_index(i, j + 1, N)] += q;
       }
     }
   } while (changed);
 }
 
-void find_identity() {
-  for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < N; ++j) {
-      grid[i][j] = 6;
+void find_identity(int *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end) {
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = 0; j < N; ++j) {
+      grid[grid_index(i, j, N)] = 6;
     }
   }
-  stabilize();
-  for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < N; ++j) {
-      grid[i][j] = 6 - grid[i][j];
+  stabilize(grid, N, col_start, col_end);
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = 0; j < N; ++j) {
+      grid[grid_index(i, j, N)] = 6 - grid[grid_index(i, j, N)];
     }
   }
-  stabilize();
+  stabilize(grid, N, col_start, col_end);
 }
 
 int main(int argc, char **argv) {
@@ -122,40 +120,38 @@ int main(int argc, char **argv) {
   if (errno || argv[1][0] < '0' || argv[1][0] > '9' || *end || !parsed ||
       parsed > INT32_MAX)
     die("grid size must be a positive int");
-  N = (int)parsed;
+  size_t N = (size_t)parsed;
 
-  grid = (int **)malloc(N * sizeof(int *));
-  for (int i = 0; i < N; ++i) {
-    grid[i] = (int *)malloc(N * sizeof(int));
-  }
+  int *grid = (int *)calloc((N + 2) * (N + 2), sizeof(int));
 
-  col_start = (int *)malloc(N * sizeof(int));
-  col_end = (int *)malloc(N * sizeof(int));
+  ptrdiff_t n = (ptrdiff_t)N;
+  ptrdiff_t r = n / 2;
 
-  int r = N / 2;
-  for (int i = 0; i < N; ++i) {
-    int width_2 = r * r - (i - r) * (i - r);
+  size_t *col_start = (size_t *)malloc(N * sizeof(size_t));
+  size_t *col_end = (size_t *)malloc(N * sizeof(size_t));
+
+  for (ptrdiff_t i = 0; i < n; ++i) {
+    ptrdiff_t width_2 = r * r - (i - r) * (i - r);
     if (width_2 < 0) {
       col_start[i] = 1;
       col_end[i] = 0;
       continue;
     }
 
-    int width = (int)sqrt((double)width_2);
+    ptrdiff_t width = (ptrdiff_t)sqrt((double)width_2);
 
-    col_start[i] = MAX(0, r - width);
-    col_end[i] = MIN(N - 1, MIN(r + width, MAX(i, N - 1 - i)));
+    col_start[i] = (size_t)MAX(0, r - width);
+    col_end[i] = (size_t)MIN(n - 1, MIN(r + width, MAX(i, n - 1 - i)));
   }
 
-  find_identity();
+  find_identity(grid, N, col_start, col_end);
 
-  render("identity.png");
-  for (int i = 0; i < N; ++i) {
-    free(grid[i]);
-  }
+  render("identity.png", grid, N);
+
   free(grid);
 
   free(col_start);
   free(col_end);
+
   return EXIT_SUCCESS;
 }
