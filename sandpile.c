@@ -14,6 +14,8 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
+#define WH(n) (((n) + 1) / 2 + 1)
+
 static void die(const char *s) {
   fprintf(stderr, "%s\n", s);
   exit(1);
@@ -126,27 +128,40 @@ static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *r
   }
 }
 
-static void stabilize_by_toppling(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict q) {
-  int changed = 0;
-  do {
-    changed = 0;
-    for (size_t i = 0; i < N; ++i) {
-      for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
-        q[grid_index(i, j, N)] = grid[grid_index(i, j, N)] >> 2;
-      }
-    }
+static int toppling_pass(int8_t *restrict planes[2], size_t dst_idx, int reduce, size_t N, const size_t *restrict col_start, const size_t *restrict col_end) {
+  int8_t *restrict dst = planes[dst_idx];
+  int8_t *restrict src = planes[1 - dst_idx];
 
-    for (size_t i = 0; i < N; ++i) {
-      for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
-        int new = (grid[grid_index(i, j, N)] & 3) + q[grid_index(i - 1, j, N)] + q[grid_index(i, j - 1, N)] + q[grid_index(i + 1, j, N)] + q[grid_index(i, j + 1, N)];
-        grid[grid_index(i, j, N)] = new;
-        changed |= (new > 3);
-      }
+  int changed = 0;
+
+  for (size_t i = 0; i < N; i++) {
+    size_t shift = dst_idx ^ ((i + 1) & 1);
+    size_t start = (col_start[i] + 2 - shift) >> 1;
+    size_t end = (col_end[i] + 1 - shift) >> 1;
+
+    for (size_t j = start; j <= end; ++j) {
+      int8_t new = (dst[(i + 1) * WH(N) + j] & (reduce ? 3 : INT8_MAX)) + (src[i * WH(N) + j] >> 2) + (src[(i + 1) * WH(N) + (j + shift - 1)] >> 2) + (src[(i + 2) * WH(N) + j] >> 2) + (src[(i + 1) * WH(N) + (j + shift)] >> 2);
+      dst[(i + 1) * WH(N) + j] = new;
+      changed |= (new > 3);
     }
-  } while (changed);
+  }
+
+  return changed;
 }
 
-static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+static size_t stabilize_by_toppling(int8_t *restrict planes[2], size_t N, const size_t *restrict col_start, const size_t *restrict col_end) {
+  toppling_pass(planes, 1, 0, N, col_start, col_end);
+
+  size_t dst_idx = 0;
+
+  while (toppling_pass(planes, dst_idx, 1, N, col_start, col_end)) {
+    dst_idx = 1 - dst_idx;
+  }
+
+  return 1 - dst_idx;
+}
+
+static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict planes[2], int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
       size_t index = grid_index(i, j, N);
@@ -169,25 +184,33 @@ static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict co
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
       int new = grid[grid_index(i, j, N)] - 4 * t[grid_index(i, j, N)] + t[grid_index(i - 1, j, N)] + t[grid_index(i, j - 1, N)] + t[grid_index(i + 1, j, N)] + t[grid_index(i, j + 1, N)];
       grid[grid_index(i, j, N)] = (int8_t)new;
+      planes[(i + j) & 1][(i + 1) * WH(N) + ((j + 1) / 2)] = (int8_t)new;
     }
   }
 
-  stabilize_by_toppling(grid, N, col_start, col_end, q);
+  size_t pending = stabilize_by_toppling(planes, N, col_start, col_end);
+
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
+      size_t plane_idx = (i + j) & 1;
+      grid[grid_index(i, j, N)] = planes[plane_idx][(i + 1) * WH(N) + ((j + 1) / 2)] & (plane_idx == pending ? 3 : INT8_MAX);
+    }
+  }
 }
 
-void find_identity(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict q, int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+void find_identity(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict planes[2], int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6;
     }
   }
-  stabilize(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
+  stabilize(grid, N, col_start, col_end, planes, t, b, x, r, p, Ap);
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6 - grid[grid_index(i, j, N)];
     }
   }
-  stabilize(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
+  stabilize(grid, N, col_start, col_end, planes, t, b, x, r, p, Ap);
 }
 
 static void cond_fix_sink(size_t i, size_t j, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict grid) {
@@ -231,7 +254,11 @@ int main(int argc, char **argv) {
   }
 
   int8_t *grid = (int8_t *)calloc((N + 2) * (N + 2), sizeof(int8_t));
-  int8_t *q = (int8_t *)calloc((N + 2) * (N + 2), sizeof(int8_t));
+
+  int8_t *planes[2];
+  planes[0] = (int8_t *)calloc((N + 2) * WH(N), sizeof(int8_t));
+  planes[1] = (int8_t *)calloc((N + 2) * WH(N), sizeof(int8_t));
+
   int *t = (int *)calloc((N + 2) * (N + 2), sizeof(int));
   double *b = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *x = (double *)calloc((N + 2) * (N + 2), sizeof(double));
@@ -239,7 +266,7 @@ int main(int argc, char **argv) {
   double *p = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *Ap = (double *)calloc((N + 2) * (N + 2), sizeof(double));
 
-  find_identity(grid, N, col_start, col_end, q, t, b, x, r, p, Ap);
+  find_identity(grid, N, col_start, col_end, planes, t, b, x, r, p, Ap);
 
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
@@ -253,7 +280,8 @@ int main(int argc, char **argv) {
   free(col_start);
   free(col_end);
 
-  free(q);
+  free(planes[0]);
+  free(planes[1]);
   free(t);
   free(b);
   free(x);
