@@ -76,25 +76,14 @@ static void render(char *restrict filename, int8_t *restrict grid, size_t N) {
   free(pixels);
 }
 
-static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *restrict col_end, const double *restrict b, double *restrict x, double tol, double *restrict r, double *restrict p, double *restrict Ap) {
-  double rr = 0.0;
-
-  for (size_t i = 0; i < N; ++i) {
-    for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
-      size_t index = grid_index(i, j, N);
-
-      r[index] = b[index];
-      p[index] = b[index];
-      x[index] = 0.0;
-      rr += b[index] * b[index];
-    }
-  }
-
+static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *restrict col_end, double rr, double *restrict x, double tol, double *restrict r, double *restrict p, double *restrict Ap) {
   double stop = tol * tol * rr;
 
   while (rr > stop) {
     double pAp = 0.0;
+    #pragma omp parallel for reduction(+ : pAp) schedule(static)
     for (size_t i = 0; i < N; ++i) {
+      #pragma omp simd reduction(+ : pAp)
       for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
         size_t index = grid_index(i, j, N);
 
@@ -105,7 +94,9 @@ static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *r
 
     double alpha = rr / pAp;
     double rr_new = 0.0;
+    #pragma omp parallel for reduction(+ : rr_new) schedule(static)
     for (size_t i = 0; i < N; ++i) {
+      #pragma omp simd reduction(+ : rr_new)
       for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
         size_t index = grid_index(i, j, N);
 
@@ -118,6 +109,7 @@ static void cg_solve(size_t N, const size_t *restrict col_start, const size_t *r
     double beta = rr_new / rr;
     rr = rr_new;
 
+    #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < N; ++i) {
       for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
         size_t index = grid_index(i, j, N);
@@ -134,6 +126,7 @@ static int toppling_pass(int8_t *restrict planes[2], size_t dst_idx, int reduce,
 
   int changed = 0;
 
+  #pragma omp parallel for reduction(| : changed) schedule(static)
   for (size_t i = 0; i < N; i++) {
     size_t shift = dst_idx ^ ((i + 1) & 1);
     size_t start = (col_start[i] + 2 - shift) >> 1;
@@ -161,16 +154,24 @@ static size_t stabilize_by_toppling(int8_t *restrict planes[2], size_t N, const 
   return 1 - dst_idx;
 }
 
-static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict planes[2], int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict planes[2], int *restrict t, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+  double rr = 0.0;
+
+  #pragma omp parallel for reduction(+ : rr) schedule(static)
   for (size_t i = 0; i < N; ++i) {
+    #pragma omp simd reduction(+ : rr)
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
       size_t index = grid_index(i, j, N);
 
-      b[index] = (double)grid[index] - 3.0;
+      double b = (double)grid[index] - 3.0;
+      r[index] = b;
+      p[index] = b;
+      x[index] = 0.0;
+      rr += b * b;
     }
   }
 
-  cg_solve(N, col_start, col_end, b, x, 1e-6, r, p, Ap);
+  cg_solve(N, col_start, col_end, rr, x, 1e-6, r, p, Ap);
 
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
@@ -198,19 +199,19 @@ static void stabilize(int8_t *restrict grid, size_t N, const size_t *restrict co
   }
 }
 
-void find_identity(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict planes[2], int *restrict t, double *restrict b, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
+void find_identity(int8_t *restrict grid, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict planes[2], int *restrict t, double *restrict x, double *restrict r, double *restrict p, double *restrict Ap) {
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6;
     }
   }
-  stabilize(grid, N, col_start, col_end, planes, t, b, x, r, p, Ap);
+  stabilize(grid, N, col_start, col_end, planes, t, x, r, p, Ap);
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = 0; j < N; ++j) {
       grid[grid_index(i, j, N)] = 6 - grid[grid_index(i, j, N)];
     }
   }
-  stabilize(grid, N, col_start, col_end, planes, t, b, x, r, p, Ap);
+  stabilize(grid, N, col_start, col_end, planes, t, x, r, p, Ap);
 }
 
 static void cond_fix_sink(size_t i, size_t j, size_t N, const size_t *restrict col_start, const size_t *restrict col_end, int8_t *restrict grid) {
@@ -260,13 +261,12 @@ int main(int argc, char **argv) {
   planes[1] = (int8_t *)calloc((N + 2) * WH(N), sizeof(int8_t));
 
   int *t = (int *)calloc((N + 2) * (N + 2), sizeof(int));
-  double *b = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *x = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *r = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *p = (double *)calloc((N + 2) * (N + 2), sizeof(double));
   double *Ap = (double *)calloc((N + 2) * (N + 2), sizeof(double));
 
-  find_identity(grid, N, col_start, col_end, planes, t, b, x, r, p, Ap);
+  find_identity(grid, N, col_start, col_end, planes, t, x, r, p, Ap);
 
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = col_start[i]; j <= col_end[i]; ++j) {
@@ -283,7 +283,6 @@ int main(int argc, char **argv) {
   free(planes[0]);
   free(planes[1]);
   free(t);
-  free(b);
   free(x);
   free(r);
   free(p);
